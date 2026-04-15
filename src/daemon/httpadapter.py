@@ -115,10 +115,30 @@ class HttpAdapter:
             #
             # TODO: handle for App hook here
             #
-            response = ""
+            try:
+                if inspect.iscoroutinefunction(req.hook):
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    result = loop.run_until_complete(req.hook(req.headers, req.body or ""))
+                    loop.close()
+                else:
+                    result = req.hook(req.headers, req.body or "")
+            except Exception as e:
+                print("[HttpAdapter] Hook error: {}".format(e))
+                result = b'{"error":"internal server error"}'
+
+            if isinstance(result, str):
+                result = result.encode('utf-8')
+            response = resp.build_response(req, envelop_content=result)
+        else:
+            # No hook — serve static file
+            response = resp.build_response(req)
 
         #print("[HttpAdapter] Response content {}".format(response))
-        conn.sendall(response)
+        try:
+            conn.sendall(response)
+        except Exception as e:
+            print("[HttpAdapter] send error: {}".format(e))
         conn.close()
 
     async def handle_client_coroutine(self, reader, writer):
@@ -142,17 +162,36 @@ class HttpAdapter:
         addr = writer.get_extra_info("peername")
 
         # TODO Handle the request asynchronously
-        msg = await reader.read(1024)
+        msg = await reader.read(65536)
 
-
-        req.prepare(msg.decode("utf-8"), routes={})
+        req.prepare(msg.decode("utf-8", errors='replace'), routes=self.routes or {})
 
         # Handle request hook
         if req.hook:
             #
             # TODO: handle for App hook here
             #
-            response = ""
+            try:
+                if inspect.iscoroutinefunction(req.hook):
+                    result = await req.hook(req.headers, req.body or "")
+                else:
+                    result = req.hook(req.headers, req.body or "")
+            except Exception as e:
+                print("[HttpAdapter] Async hook error: {}".format(e))
+                result = b'{"error":"internal server error"}'
+
+            if isinstance(result, str):
+                result = result.encode('utf-8')
+            response = resp.build_response(req, envelop_content=result)
+        else:
+            # Build response from static file
+            #print("[HttpAdapter] Start **ASYNC** build_response with type {}".format(type(req)))
+            response = resp.build_response(req)
+
+        # Send all the response asynchronously
+        writer.write(response)
+        await writer.drain()
+        writer.close()
 
         # Build response
         #print("[HttpAdapter] Start **ASYNC** build_response with type {}".format(type(req)))
