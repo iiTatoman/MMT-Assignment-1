@@ -186,15 +186,36 @@ def run_backend(ip, port, routes):
             if mode_async == "callback":
                # Callback implementation - Event driven architecture
                server.setblocking(False)
-
+ 
                events = sel.select(timeout=None)
                for key, mask in events:
                    callback, ip, port, routes = key.data
                    callback(key.fileobj, ip, port, conn, addr, routes)
-
+ 
+            elif mode_async == "coroutine":
+               # Coroutine implementation - wrap the accepted raw socket into
+               # asyncio streams and dispatch to handle_client_coroutine.
+               # A new event loop runs in a daemon thread per connection so
+               # the main accept() loop stays non-blocking.
+               async def run_coroutine_client(c, a):
+                   reader, writer = await asyncio.open_connection(sock=c)
+                   daemon = HttpAdapter(ip, port, c, a, routes)
+                   await daemon.handle_client_coroutine(reader, writer)
+ 
+               coroutine_thread = threading.Thread(
+                   target=lambda c=conn, a=addr: asyncio.run(run_coroutine_client(c, a)),
+                   daemon=True
+               )
+               coroutine_thread.start()
+ 
             else:
                # Baseline multi-thread implementation
-               #client_thread = threading.Thread...
+               client_thread = threading.Thread(
+                   target=handle_client,
+                   args=(ip, port, conn, addr, routes),
+                   daemon=True
+               )
+               client_thread.start()
 
 
     except socket.error as e:
