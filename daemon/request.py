@@ -81,7 +81,7 @@ class Request():
             if path == '/':
                 path = '/index.html'
         except Exception:
-            return None, None
+            return None, None, None
 
         return method, path, version
              
@@ -112,14 +112,18 @@ class Request():
         self.method, self.path, self.version = self.extract_request_line(request)
         print("[Request] {} path {} version {}".format(self.method, self.path, self.version))
 
+        # Split raw headers and body
+        self._raw_headers, self._raw_body = self.fetch_headers_body(request)
+        self.headers = self.prepare_headers(request)
+        self.body = self._raw_body
+
         #
-        # @bksysnet Preapring the webapp hook with AsynapRous instance
+        # @bksysnet Preparing the webapp hook with AsynapRous instance
         # The default behaviour with HTTP server is empty routed
         #
         # TODO manage the webapp hook in this mounting point
         #
-        
-        if not routes == {}:
+        if routes and routes != {}:
             self.routes = routes
             print("[Request] Routing METHOD {} path {}".format(self.method, self.path))
             self.hook = routes.get((self.method, self.path))
@@ -129,31 +133,56 @@ class Request():
             # ...
             #
 
-        self._raw_heaers = ""
-        self._raw_body =  ""
-        cookies = self.headers.get('cookie', '')
-            #
-            #  TODO: implement the cookie function here
-            #        by parsing the header            #
+        #
+        #  TODO: implement the cookie function here
+        #        by parsing the header
+        #
+        cookie_str = self.headers.get('cookie', '')
+        if cookie_str:
+            cookie_dict = {}
+            for pair in cookie_str.split(';'):
+                pair = pair.strip()
+                if '=' in pair:
+                    k, v = pair.split('=', 1)
+                    cookie_dict[k.strip()] = v.strip()
+            self.cookies = cookie_dict
+
+        # Parse Authorization header for auth (RFC 2617)
+        import base64
+        auth_header = self.headers.get('authorization', '')
+        if auth_header.lower().startswith('basic '):
+            try:
+                decoded = base64.b64decode(auth_header.split(' ', 1)[1]).decode('utf-8')
+                username, password = decoded.split(':', 1)
+                self.auth = (username, password)
+            except Exception:
+                self.auth = None
+        else:
+            self.auth = None
 
         return
 
     def prepare_body(self, data, files, json=None):
+        self.body = data
         self.prepare_content_length(self.body)
-        self.body = body
         #
         # TODO prepare the request authentication
         #
-	# self.auth = ...
+        # self.auth = ...
         return
 
 
     def prepare_content_length(self, body):
-        self.headers["Content-Length"] = "0"
+        if not self.headers:
+            self.headers = {}
+        if body:
+            self.headers["Content-Length"] = str(len(body))
+        else:
+            self.headers["Content-Length"] = "0"
         #
         # TODO prepare the request authentication
         #
-	# self.auth = ...
+        # self.auth = ...
         return
 
 
@@ -161,7 +190,7 @@ class Request():
         #
         # TODO prepare the request authentication
         #
-	# self.auth = ...
+        self.auth = auth
         return
 
     def prepare_cookies(self, cookies):

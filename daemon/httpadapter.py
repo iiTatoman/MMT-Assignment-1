@@ -105,20 +105,80 @@ class HttpAdapter:
         # Response handler
         resp = self.response
 
-        # Handle the request
-        msg = conn.recv(1024).decode()
+        # Handle the request — read until full HTTP message received
+        try:
+            raw = b""
+            conn.settimeout(5.0)
+            while True:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                raw += chunk
+                if b"\r\n\r\n" in raw:
+                    # Check Content-Length to read body
+                    header_part = raw.split(b"\r\n\r\n", 1)[0].decode('utf-8', errors='replace')
+                    body_part   = raw.split(b"\r\n\r\n", 1)[1]
+                    content_length = 0
+                    for line in header_part.splitlines():
+                        if line.lower().startswith('content-length:'):
+                            try:
+                                content_length = int(line.split(':', 1)[1].strip())
+                            except ValueError:
+                                pass
+                    if len(body_part) >= content_length:
+                        break
+        except Exception as e:
+            print("[HttpAdapter] recv error: {}".format(e))
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return
+
+        msg = raw.decode('utf-8', errors='replace')
         req.prepare(msg, routes)
         print("[HttpAdapter] Invoke handle_client connection {}".format(addr))
+
+        # Section 2.2: check Basic Auth / session cookie for protected paths
+        user = resp.check_session_cookie(req) or resp.check_basic_auth(req)
+        protected = req.path not in ('/', '/index.html', '/login.html',
+                                     '/login', '/form.html', '/chat.html')
+        if req.path and req.path.startswith('/protected') and not user:
+            response = resp.build_auth_challenge()
+            conn.sendall(response)
+            conn.close()
+            return
 
         # Handle request hook
         if req.hook:
             #
             # TODO: handle for App hook here
             #
-            response = ""
+            # Call the registered route handler (sync or async)
+            try:
+                if inspect.iscoroutinefunction(req.hook):
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    result = loop.run_until_complete(req.hook(req.headers, req.body or ""))
+                    loop.close()
+                else:
+                    result = req.hook(req.headers, req.body or "")
+            except Exception as e:
+                print("[HttpAdapter] Hook error: {}".format(e))
+                result = b'{"error":"internal server error"}'
+
+            if isinstance(result, str):
+                result = result.encode('utf-8')
+            response = resp.build_response(req, envelop_content=result)
+        else:
+            # No hook — serve static file
+            response = resp.build_response(req)
 
         #print("[HttpAdapter] Response content {}".format(response))
-        conn.sendall(response)
+        try:
+            conn.sendall(response)
+        except Exception as e:
+            print("[HttpAdapter] send error: {}".format(e))
         conn.close()
 
     async def handle_client_coroutine(self, reader, writer):
@@ -138,29 +198,41 @@ class HttpAdapter:
         # Response handler
         resp = self.response
 
-        print("[HttpAdapter] Invoke handle_client_coroutine connection {})".format(addr))
         addr = writer.get_extra_info("peername")
+        print("[HttpAdapter] Invoke handle_client_coroutine connection {})".format(addr))
 
         # TODO Handle the request asynchronously
-        msg = await reader.read(1024)
+        msg = await reader.read(65536)
 
-
-        req.prepare(msg.decode("utf-8"), routes={})
+        req.prepare(msg.decode("utf-8", errors='replace'), routes=self.routes or {})
 
         # Handle request hook
         if req.hook:
             #
             # TODO: handle for App hook here
             #
-            response = ""
+            # Call the registered route handler (async-aware)
+            try:
+                if inspect.iscoroutinefunction(req.hook):
+                    result = await req.hook(req.headers, req.body or "")
+                else:
+                    result = req.hook(req.headers, req.body or "")
+            except Exception as e:
+                print("[HttpAdapter] Async hook error: {}".format(e))
+                result = b'{"error":"internal server error"}'
 
-        # Build response
-        #print("[HttpAdapter] Start **ASYNC** build_response with type {}".format(type(req)))
-        response = resp.build_response(req)
+            if isinstance(result, str):
+                result = result.encode('utf-8')
+            response = resp.build_response(req, envelop_content=result)
+        else:
+            # Build response from static file
+            #print("[HttpAdapter] Start **ASYNC** build_response with type {}".format(type(req)))
+            response = resp.build_response(req)
 
         # Send all the response asynchronously
         writer.write(response)
         await writer.drain()
+        writer.close()
 
     @property
     def extract_cookies(self, req, resp):
@@ -288,9 +360,11 @@ class HttpAdapter:
         #       username, password =...
         # we provide dummy auth here
         #
+        import base64
         username, password = ("user1", "password")
 
         if username:
-            headers["Proxy-Authorization"] = (username, password)
+            creds = base64.b64encode("{}:{}".format(username, password).encode()).decode()
+            headers["Proxy-Authorization"] = "Basic {}".format(creds)
 
         return headers

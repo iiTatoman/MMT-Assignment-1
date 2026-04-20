@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AsynapRous Chat</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', Arial, sans-serif; background: #1a1d2e; color: #e0e0e0; }
+
+    #app { display: flex; height: 100vh; }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: 220px; flex-shrink: 0;
+      background: #111320;
+      display: flex; flex-direction: column;
+      border-right: 1px solid #2a2d40;
+    }
+    #sidebar h2 {
+      padding: 18px 16px 14px;
+      font-size: 1rem; font-weight: 700; letter-spacing: .5px;
+      color: #fff; border-bottom: 1px solid #2a2d40;
+    }
+    .sec-label {
+      padding: 14px 16px 6px;
+      font-size: .7rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .08em;
+      color: #555a7a;
+    }
+    #ch-list { list-style: none; padding: 0 8px; }
+    #ch-list li {
+      padding: 8px 12px; border-radius: 6px; margin: 2px 0;
+      font-size: .9rem; cursor: pointer; color: #9099c0;
+      transition: background .15s, color .15s;
+    }
+    #ch-list li:hover  { background: #1e2138; color: #fff; }
+    #ch-list li.active { background: #2e3560; color: #fff; font-weight: 600; }
+
+    #peer-list { list-style: none; padding: 0 8px; flex: 1; overflow-y: auto; }
+    #peer-list li {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 12px; font-size: .85rem; color: #9099c0;
+    }
+    #peer-list li::before {
+      content: ''; width: 8px; height: 8px; border-radius: 50%;
+      background: #3ddc84; flex-shrink: 0;
+      box-shadow: 0 0 6px #3ddc84;
+    }
+    #sidebar-footer {
+      padding: 12px 16px; font-size: .78rem; color: #555a7a;
+      border-top: 1px solid #2a2d40;
+    }
+
+    /* ── Main ── */
+    #main { flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100vh; }
+
+    #chat-header {
+      flex-shrink: 0;
+      background: #1a1d2e; border-bottom: 1px solid #2a2d40;
+      padding: 14px 20px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    #chat-header h3 { font-size: 1rem; font-weight: 700; color: #fff; }
+    #status { font-size: .78rem; color: #555a7a; }
+
+    /* messages area — takes all remaining space */
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 20px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      background: #1a1d2e;
+    }
+    #messages::-webkit-scrollbar { width: 5px; }
+    #messages::-webkit-scrollbar-track { background: transparent; }
+    #messages::-webkit-scrollbar-thumb { background: #2a2d40; border-radius: 3px; }
+
+    /* message bubbles */
+    .msg { display: flex; flex-direction: column; max-width: 100%; }
+    .msg.me  { align-items: flex-end; }
+    .msg:not(.me) { align-items: flex-start; }
+    .msg .meta { font-size: .72rem; color: #555a7a; margin-bottom: 4px; padding: 0 4px; }
+    .msg .bubble {
+      padding: 10px 16px; border-radius: 16px;
+      font-size: .92rem; line-height: 1.5;
+      max-width: 65%; word-break: break-word;
+    }
+    .msg:not(.me) .bubble { background: #242740; color: #e0e0e0; border-bottom-left-radius: 4px; }
+    .msg.me      .bubble { background: #4f46e5; color: #fff;    border-bottom-right-radius: 4px; }
+    .notif { text-align: center; font-size: .75rem; color: #3a3d54; }
+
+    /* ── Input ── */
+    #input-area {
+      flex-shrink: 0;
+      background: #1a1d2e; border-top: 1px solid #2a2d40;
+      padding: 14px 20px;
+      display: flex; gap: 10px; align-items: center;
+    }
+    #input-area input {
+      flex: 1; padding: 11px 18px;
+      background: #242740; border: 1px solid #2a2d40; border-radius: 24px;
+      color: #e0e0e0; font-size: .92rem; outline: none;
+      transition: border-color .2s;
+    }
+    #input-area input:focus { border-color: #4f46e5; }
+    #input-area input::placeholder { color: #555a7a; }
+    #input-area button {
+      padding: 11px 22px; background: #4f46e5; color: #fff;
+      border: none; border-radius: 24px; cursor: pointer;
+      font-size: .92rem; font-weight: 600;
+      transition: background .2s;
+    }
+    #input-area button:hover { background: #4338ca; }
+
+    /* ── Login overlay ── */
+    #overlay {
+      position: fixed; inset: 0; z-index: 99;
+      background: rgba(10,11,20,.92);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .card {
+      background: #1a1d2e; border: 1px solid #2a2d40;
+      border-radius: 14px; padding: 2.2em 2.4em; min-width: 320px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.5);
+    }
+    .card h2 { color: #fff; margin-bottom: 1.2em; font-size: 1.2rem; }
+    .card label { display: block; font-size: .8rem; color: #9099c0; margin-bottom: 5px; }
+    .card input {
+      width: 100%; padding: 10px 14px; margin-bottom: 14px;
+      background: #242740; border: 1px solid #2a2d40; border-radius: 8px;
+      color: #e0e0e0; font-size: .92rem; outline: none;
+      transition: border-color .2s;
+    }
+    .card input:focus { border-color: #4f46e5; }
+    .card button {
+      width: 100%; padding: 11px; margin-top: 4px;
+      background: #4f46e5; color: #fff; border: none;
+      border-radius: 8px; font-size: .95rem; font-weight: 600; cursor: pointer;
+      transition: background .2s;
+    }
+    .card button:hover { background: #4338ca; }
+    #err { color: #f87171; font-size: .82rem; margin-top: 8px; min-height: 1.1em; }
+  </style>
+</head>
+<body>
+
+<!-- Login overlay -->
+<div id="overlay">
+  <div class="card">
+    <h2>AsynapRous Chat</h2>
+    <label>Tracker URL</label>
+    <input id="url" type="text" value="" />
+    <label>Username</label>
+    <input id="user" type="text" value="admin" />
+    <label>Password</label>
+    <input id="pass" type="password" value="admin123" />
+    <label>My P2P Listen Port</label>
+    <input id="port" type="number" value="4001" />
+    <button onclick="doLogin()">Connect</button>
+    <p id="err"></p>
+  </div>
+</div>
+
+<!-- Chat UI -->
+<div id="app">
+  <div id="sidebar">
+    <h2>💬 AsynapRous Chat</h2>
+    <div class="sec-label">Channels</div>
+    <ul id="ch-list">
+      <li class="active" onclick="switchCh('general')"># general</li>
+    </ul>
+    <div class="sec-label">Online Peers</div>
+    <ul id="peer-list"></ul>
+    <div id="sidebar-footer">Not connected</div>
+  </div>
+
+  <div id="main">
+    <div id="chat-header">
+      <h3 id="ch-title"># general</h3>
+      <span id="status"></span>
+    </div>
+    <div id="messages"></div>
+    <div id="input-area">
+      <input id="msg-in" placeholder="Type a message and press Enter"
+             onkeydown="if(event.key==='Enter') sendMsg()" />
+      <button onclick="sendMsg()">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+var BASE='', token='', myUser='', myPeerId='', channel='general', myPass='';
+var knownCount={};
+
+window.onload = function(){
+  document.getElementById('url').value = window.location.protocol+'//'+window.location.host;
+};
+
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function nowStr(){ return new Date().toTimeString().slice(0,8); }
+
+async function api(method, path, body){
+  var hdrs={'Content-Type':'application/json'};
+  if(myUser && myPass) hdrs['Authorization']='Basic '+btoa(myUser+':'+myPass);
+  var r=await fetch(BASE+path,{method:method,headers:hdrs,body:body?JSON.stringify(body):undefined});
+  return r.json();
+}
+
+async function doLogin(){
+  document.getElementById('err').textContent='';
+  BASE=document.getElementById('url').value.trim().replace(/\/$/,'');
+  var user=document.getElementById('user').value.trim();
+  var pass=document.getElementById('pass').value;
+  var port=parseInt(document.getElementById('port').value);
+  try{
+    var r=await api('POST','/login',{username:user,password:pass});
+    if(r.status!=='ok') throw new Error(r.message||'Login failed');
+    token=r.data.token; myUser=r.data.username; myPass=pass;
+    var reg=await api('POST','/submit-info',{ip:'127.0.0.1',port:port});
+    myPeerId=(reg.data&&reg.data.peer_id)?reg.data.peer_id:'127.0.0.1:'+port;
+    await api('POST','/add-list',{channel:channel,peer_id:myPeerId});
+    document.getElementById('sidebar-footer').textContent='You: '+myUser;
+    document.getElementById('status').textContent='Connected as '+myUser;
+    document.getElementById('overlay').style.display='none';
+    addNotif('Connected as '+myUser);
+    setInterval(function(){ pollMessages(); refreshPeers(); }, 2000);
+    pollMessages(); refreshPeers();
+  }catch(e){ document.getElementById('err').textContent=e.message; }
+}
+
+function switchCh(ch){
+  channel=ch;
+  document.getElementById('ch-title').textContent='# '+ch;
+  document.querySelectorAll('#ch-list li').forEach(function(li){
+    li.classList.toggle('active', li.textContent.indexOf(ch)>=0);
+  });
+  document.getElementById('messages').innerHTML='';
+  knownCount[ch]=0;
+  if(token) api('POST','/add-list',{channel:ch,peer_id:myPeerId}).catch(function(){});
+}
+
+async function sendMsg(){
+  var inp=document.getElementById('msg-in');
+  var text=inp.value.trim();
+  if(!text||!myUser) return;
+  inp.value='';
+  try{
+    await api('POST','/broadcast-peer',{channel:channel,text:text,peer_id:myPeerId});
+    appendMsg({from:myUser,text:text,ts:nowStr()},true);
+    knownCount[channel]=(knownCount[channel]||0)+1;
+  }catch(e){ addNotif('Send failed: '+e.message); }
+}
+
+async function pollMessages(){
+  try{
+    var r=await api('GET','/messages');
+    if(r.status!=='ok') return;
+    var msgs=r.data.messages||[];
+    var known=knownCount[channel]||0;
+    for(var i=known;i<msgs.length;i++){
+      if(msgs[i].from!==myUser) appendMsg(msgs[i],false);
+    }
+    knownCount[channel]=msgs.length;
+  }catch(e){}
+}
+
+async function refreshPeers(){
+  try{
+    var r=await api('GET','/get-list');
+    if(r.status!=='ok') return;
+    var ul=document.getElementById('peer-list');
+    ul.innerHTML='';
+    var peers=r.data.peers||{};
+    Object.keys(peers).forEach(function(pid){
+      var li=document.createElement('li');
+      li.textContent=peers[pid].username+(pid===myPeerId?' (me)':'');
+      ul.appendChild(li);
+    });
+  }catch(e){}
+}
+
+function appendMsg(msg, isMe){
+  var box=document.getElementById('messages');
+  var d=document.createElement('div');
+  d.className='msg'+(isMe?' me':'');
+  d.innerHTML='<div class="meta">'+(isMe?'You':esc(msg.from))+' &middot; '+esc(msg.ts||'')+'</div>'+
+              '<div class="bubble">'+esc(msg.text)+'</div>';
+  box.appendChild(d);
+  box.scrollTop=box.scrollHeight;
+}
+
+function addNotif(text){
+  var d=document.createElement('div');
+  d.className='notif'; d.textContent=text;
+  document.getElementById('messages').appendChild(d);
+}
+</script>
+</body>
+</html>
