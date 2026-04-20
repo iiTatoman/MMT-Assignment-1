@@ -232,38 +232,46 @@ async function doLogin(){
 }
 
 function switchCh(ch){
-  channel=ch;
-  document.getElementById('ch-title').textContent='# '+ch;
+  channel = ch;
+  document.getElementById('ch-title').textContent = '# ' + ch;
   document.querySelectorAll('#ch-list li').forEach(function(li){
-    li.classList.toggle('active', li.textContent.indexOf(ch)>=0);
+    li.classList.toggle('active', li.textContent.indexOf(ch) >= 0);
   });
-  document.getElementById('messages').innerHTML='';
-  knownCount[ch]=0;
-  if(token) api('POST','/add-list',{channel:ch,peer_id:myPeerId}).catch(function(){});
+  if(token){
+    api('POST','/add-list',{channel:ch,peer_id:myPeerId})
+      .then(function(){ pollMessages(); })
+      .catch(function(){});
+  } else {
+    document.getElementById('messages').innerHTML = '';
+  }
 }
 
 async function sendMsg(){
-  var inp=document.getElementById('msg-in');
-  var text=inp.value.trim();
-  if(!text||!myUser) return;
-  inp.value='';
+  var inp = document.getElementById('msg-in');
+  var text = inp.value.trim();
+  if(!text || !myUser) return;
+
+  inp.value = '';
   try{
-    await api('POST','/broadcast-peer',{channel:channel,text:text,peer_id:myPeerId});
-    appendMsg({from:myUser,text:text,ts:nowStr()},true);
-    knownCount[channel]=(knownCount[channel]||0)+1;
-  }catch(e){ addNotif('Send failed: '+e.message); }
+    await api('POST','/broadcast-peer',{
+      channel: channel,
+      text: text,
+      peer_id: myPeerId
+    });
+    await pollMessages();
+  }catch(e){
+    addNotif('Send failed: ' + e.message);
+  }
 }
 
 async function pollMessages(){
   try{
-    var r=await api('GET','/messages');
-    if(r.status!=='ok') return;
-    var msgs=r.data.messages||[];
-    var known=knownCount[channel]||0;
-    for(var i=known;i<msgs.length;i++){
-      if(msgs[i].from!==myUser) appendMsg(msgs[i],false);
-    }
-    knownCount[channel]=msgs.length;
+    var r = await api('GET','/messages');
+    if(r.status !== 'ok') return;
+
+    var msgs = r.data.messages || [];
+    renderMessages(msgs);
+    knownCount[channel] = msgs.length;
   }catch(e){}
 }
 
@@ -280,6 +288,15 @@ async function refreshPeers(){
       ul.appendChild(li);
     });
   }catch(e){}
+}
+
+function renderMessages(msgs){
+  var box = document.getElementById('messages');
+  box.innerHTML = '';
+
+  msgs.forEach(function(msg){
+    appendMsg(msg, msg.from === myUser);
+  });
 }
 
 function appendMsg(msg, isMe){
