@@ -17,6 +17,7 @@ daemon.request
 This module provides a Request object to manage and persist 
 request settings (cookies, auth, proxies).
 """
+import base64
 from .dictionary import CaseInsensitiveDict
 
 class Request():
@@ -71,6 +72,7 @@ class Request():
         self.routes = {}
         #: Hook point for routed mapped-path
         self.hook = None
+        self.auth = None
 
     def extract_request_line(self, request):
         try:
@@ -112,6 +114,10 @@ class Request():
         self.method, self.path, self.version = self.extract_request_line(request)
         print("[Request] {} path {} version {}".format(self.method, self.path, self.version))
 
+        # Khôi phục việc gọi hàm parse header để có dữ liệu
+        self._raw_headers, self._raw_body = self.fetch_headers_body(request)
+        self.headers = self.prepare_headers(request)
+
         #
         # @bksysnet Preapring the webapp hook with AsynapRous instance
         # The default behaviour with HTTP server is empty routed
@@ -135,12 +141,14 @@ class Request():
             #
             #  TODO: implement the cookie function here
             #        by parsing the header            #
+        self.cookies = self.prepare_cookies(cookies) if cookies else {}
+        self.prepare_auth(self.headers.get('authorization', ''))
 
         return
 
     def prepare_body(self, data, files, json=None):
         self.prepare_content_length(self.body)
-        self.body = body
+        self.body = data
         #
         # TODO prepare the request authentication
         #
@@ -149,7 +157,7 @@ class Request():
 
 
     def prepare_content_length(self, body):
-        self.headers["Content-Length"] = "0"
+        self.headers["Content-Length"] = "0" if not body else str(len(body))
         #
         # TODO prepare the request authentication
         #
@@ -162,7 +170,27 @@ class Request():
         # TODO prepare the request authentication
         #
 	# self.auth = ...
+        if auth and auth.startswith('Basic '):
+            try:
+                encoded = auth[len('Basic '):]
+                decoded = base64.b64decode(encoded).decode('utf-8')
+                username, _, password = decoded.partition(':')
+                self.auth = (username, password)
+            except Exception:
+                self.auth = None
         return
 
     def prepare_cookies(self, cookies):
-            self.headers["Cookie"] = cookies
+        self.headers["Cookie"] = cookies
+        cookie_dict = {}
+        if not cookies:
+            return cookie_dict
+            
+        for pair in cookies.split(';'):
+            pair = pair.strip()
+            if '=' in pair:
+                name, _, value = pair.partition('=')
+                cookie_dict[name.strip()] = value.strip()
+            elif pair:
+                cookie_dict[pair] = ''
+        return cookie_dict

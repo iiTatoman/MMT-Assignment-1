@@ -83,7 +83,7 @@ class Response():
         : params request : The originating request object.
         """
 
-        self._content = False
+        self._content = b""
         self._content_consumed = False
         self._next = None
 
@@ -163,7 +163,7 @@ class Response():
             elif sub_type == 'html':
                 base_dir = BASE_DIR+"www/"
             else:
-                handle_text_other(sub_type)
+                base_dir = BASE_DIR+"static/" # handle_text_other(sub_type) placeholder
         elif main_type == 'image':
             base_dir = BASE_DIR+"static/"
             self.headers['Content-Type']='image/{}'.format(sub_type)
@@ -223,7 +223,7 @@ class Response():
 
         :rtypes bytes: encoded HTTP response header.
         """
-        reqhdr = request.headers
+        reqhdr = request.headers if request.headers else {}
         rsphdr = self.headers
 
         #Build dynamic headers
@@ -232,7 +232,7 @@ class Response():
                 "Accept-Language": "{}".format(reqhdr.get("Accept-Language", "en-US,en;q=0.9")),
                 "Authorization": "{}".format(reqhdr.get("Authorization", "Basic <credentials>")),
                 "Cache-Control": "no-cache",
-                "Content-Type": "{}".format(self.headers['Content-Type']),
+                "Content-Type": "{}".format(self.headers.get('Content-Type', 'text/html')),
                 "Content-Length": "{}".format(len(self._content)),
         #       "Cookie": "{}".format(reqhdr.get("Cookie", "sessionid=xyz789")), #dummy cooki
         #
@@ -247,6 +247,13 @@ class Response():
                 "User-Agent": "{}".format(reqhdr.get("User-Agent", "Chrome/123.0.0.0")),
             }
 
+        if self.status_code == 401:
+            headers["WWW-Authenticate"] = 'Basic realm="AsynapRous"'
+
+        if self.cookies:
+            for name, value in self.cookies.items():
+                headers["Set-Cookie"] = "{}={}; Path=/; HttpOnly".format(name, value)
+
         # Header text alignment
             #
             #  TODO: implement the header building to create formated
@@ -256,7 +263,13 @@ class Response():
             # TODO prepare the request authentication
             #
             # self.auth = ...
-
+            
+        status = self.status_code or 200
+        reason = self.reason or "OK"
+        fmt_header = "HTTP/1.1 {} {}\r\n".format(status, reason)
+        for key, val in headers.items():
+            fmt_header += "{}: {}\r\n".format(key, val)
+        fmt_header += "\r\n"
 
         return str(fmt_header).encode('utf-8')
 
@@ -311,5 +324,24 @@ class Response():
         #
         else:
             return self.build_notfound()
+
+        if envelop_content is not None:
+            if isinstance(envelop_content, str):
+                self._content = envelop_content.encode('utf-8')
+            elif isinstance(envelop_content, bytes):
+                self._content = envelop_content
+            else:
+                self._content = str(envelop_content).encode('utf-8')
+        else:
+            content_length, raw_content = self.build_content(path, base_dir)
+            if content_length < 0:
+                return self.build_notfound()
+            self._content = raw_content
+
+        if self.status_code is None:
+            self.status_code = 200
+            self.reason = "OK"
+
+        self._header = self.build_response_header(request)
 
         return self._header + self._content

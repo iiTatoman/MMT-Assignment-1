@@ -26,6 +26,7 @@ from .dictionary import CaseInsensitiveDict
 
 import asyncio
 import inspect
+import base64
 
 class HttpAdapter:
     """
@@ -118,6 +119,12 @@ class HttpAdapter:
             response = ""
 
         #print("[HttpAdapter] Response content {}".format(response))
+        if 'response' not in locals() or not response:
+            response = resp.build_response(req)
+            
+        if isinstance(response, str):
+            response = response.encode('utf-8')
+            
         conn.sendall(response)
         conn.close()
 
@@ -156,14 +163,19 @@ class HttpAdapter:
 
         # Build response
         #print("[HttpAdapter] Start **ASYNC** build_response with type {}".format(type(req)))
-        response = resp.build_response(req)
+        if 'response' not in locals() or not response:
+            response = resp.build_response(req)
 
         # Send all the response asynchronously
+        if isinstance(response, str):
+            response = response.encode('utf-8')
+
         writer.write(response)
         await writer.drain()
+        writer.close()
 
     @property
-    def extract_cookies(self, req, resp):
+    def extract_cookies(self):
         """
         Build cookies from the :class:`Request <Request>` headers.
 
@@ -172,12 +184,14 @@ class HttpAdapter:
         :rtype: cookies - A dictionary of cookie key-value pairs.
         """
         cookies = {}
-        for header in headers:
-            if header.startswith("Cookie:"):
-                cookie_str = header.split(":", 1)[1].strip()
-                for pair in cookie_str.split(";"):
-                    key, value = pair.strip().split("=")
-                    cookies[key] = value
+        headers = self.request.headers or {}
+        cookie_str = headers.get('cookie', '')
+        
+        if cookie_str:
+            for pair in cookie_str.split(";"):
+                if "=" in pair:
+                    key, value = pair.strip().split("=", 1)
+                    cookies[key.strip()] = value.strip()
         return cookies
 
     def build_response(self, req, resp):
@@ -190,9 +204,9 @@ class HttpAdapter:
         response = Response()
 
         # Set encoding.
-        response.encoding = get_encoding_from_headers(response.headers)
+        response.encoding = getattr(resp, 'encoding', None)
         response.raw = resp
-        response.reason = response.raw.reason
+        response.reason = getattr(resp, 'reason', None)
 
         if isinstance(req.url, bytes):
             response.url = req.url.decode("utf-8")
@@ -200,7 +214,7 @@ class HttpAdapter:
             response.url = req.url
 
         # Add new cookies from the server.
-        response.cookies = extract_cookies(req)
+        response.cookies = self.extract_cookies
 
         # Give the Response some context.
         response.request = req
@@ -288,9 +302,23 @@ class HttpAdapter:
         #       username, password =...
         # we provide dummy auth here
         #
-        username, password = ("user1", "password")
+        req_headers = self.request.headers or {}
+        auth_header = req_headers.get('authorization', '')
+        username, password = None, None
+
+        if auth_header.startswith('Basic '):
+            try:
+                encoded = auth_header[len('Basic '):]
+                decoded = base64.b64decode(encoded).decode('utf-8')
+                username, _, password = decoded.partition(':')
+            except Exception:
+                pass
+
+        if not username:
+            username, password = ("user1", "password")
 
         if username:
-            headers["Proxy-Authorization"] = (username, password)
+            token = base64.b64encode(f"{username}:{password}".encode('utf-8')).decode('utf-8')
+            headers["Proxy-Authorization"] = "Basic {}".format(token)
 
         return headers
