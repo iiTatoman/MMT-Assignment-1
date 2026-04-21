@@ -197,6 +197,11 @@ var knownCount={};
 
 window.onload = function(){
   document.getElementById('url').value = window.location.protocol+'//'+window.location.host;
+  
+  // Ask for notification permission if not already granted or denied
+  if ("Notification" in window && Notification.permission === "default") {
+    Notification.requestPermission();
+  }
 };
 
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -270,6 +275,24 @@ async function pollMessages(){
     if(r.status !== 'ok') return;
 
     var msgs = r.data.messages || [];
+    
+    var prevCount = knownCount[channel] || 0;
+    if (msgs.length > prevCount) {
+      for (var i = prevCount; i < msgs.length; i++) {
+        var newMsg = msgs[i];
+        
+        if (newMsg.from !== myUser) {
+          if ("Notification" in window && Notification.permission === "granted") {
+            new Notification("New message in #" + channel, {
+              body: newMsg.from + ": " + newMsg.text
+            });
+          } else {
+            addNotif("New message from " + newMsg.from);
+          }
+        }
+      }
+    }
+
     renderMessages(msgs);
     knownCount[channel] = msgs.length;
   }catch(e){}
