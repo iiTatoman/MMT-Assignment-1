@@ -39,7 +39,6 @@ import socket
 import threading
 import argparse
 import re
-import os
 from urllib.parse import urlparse
 from collections import defaultdict
 
@@ -122,6 +121,6 @@ if __name__ == "__main__":
     ip = args.server_ip
     port = args.server_port
 
-    routes = parse_virtual_hosts(os.path.join(os.path.dirname(__file__), "config", "proxy.conf"))
+    routes = parse_virtual_hosts("config/proxy.conf")
 
     create_proxy(ip, port, routes)

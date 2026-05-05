@@ -105,18 +105,15 @@ def resolve_routing_policy(hostname, routes):
             # Use a dummy host to raise an invalid connection
             proxy_host = '127.0.0.1'
             proxy_port = '9000'
-        elif len(proxy_map) == 1:
+        elif len(value) == 1:
             proxy_host, proxy_port = proxy_map[0].split(":", 2)
         #elif: # apply the policy handling 
         #   proxy_map
         #   policy
         else:
-            # Round-robin: pick based on a simple counter stored in resolve state
-            if not hasattr(resolve_routing_policy, '_counters'):
-                resolve_routing_policy._counters = {}
-            idx = resolve_routing_policy._counters.get(hostname, 0) % len(proxy_map)
-            resolve_routing_policy._counters[hostname] = idx + 1
-            proxy_host, proxy_port = proxy_map[idx].split(":", 2)
+            # Out-of-handle mapped host
+            proxy_host = '127.0.0.1'
+            proxy_port = '9000'
     else:
         print("[Proxy] resolve route of hostname {} is a singulair to".format(hostname))
         proxy_host, proxy_port = proxy_map.split(":", 2)
@@ -205,9 +202,10 @@ def run_proxy(ip, port, routes):
             client_thread = threading.Thread(
                 target=handle_client,
                 args=(ip, port, conn, addr, routes),
-                daemon=True
             )
+            client_thread.daemon = True
             client_thread.start()
+            
     except socket.error as e:
       print("Socket error: {}".format(e))
 

@@ -242,9 +242,9 @@
     <label>Tracker URL</label>
     <input id="url" type="text" />
     <label>Username</label>
-    <input id="user" type="text" value="admin" />
+    <input id="user" type="text" />
     <label>Password</label>
-    <input id="pass" type="password" value="admin123" />
+    <input id="pass" type="password" />
     <label>My P2P Listen Port</label>
     <input id="port" type="number" value="4001" />
     <button onclick="doLogin()">Log In</button>
@@ -331,10 +331,16 @@ async function doLogin(){
   var pass=document.getElementById('pass').value;
   var port=parseInt(document.getElementById('port').value);
   try{
-    var r=await api('POST','/login',{username:user,password:pass});
-    if(r.status!=='ok') throw new Error(r.message||'Login failed');
-    token=r.data.token; myUser=r.data.username; myPass=pass;
-    var reg=await api('POST','/submit-info',{ip:'127.0.0.1',port:port});
+    var body='username='+encodeURIComponent(user)+'&password='+encodeURIComponent(pass);
+    var loginResp=await fetch(BASE+'/login',{
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:body
+    });
+    if(!loginResp.ok) throw new Error('Login failed');
+
+    token='ok'; myUser=user; myPass=pass;
+    var reg=await api('POST','/submit-info',{username:myUser,ip:'127.0.0.1',port:port});
     myPeerId=(reg.data&&reg.data.peer_id)?reg.data.peer_id:'127.0.0.1:'+port;
     await api('POST','/add-list',{channel:channel,peer_id:myPeerId});
 
@@ -425,7 +431,7 @@ async function sendMsg(){
   if(!text||!myUser) return;
   inp.value='';
   try{
-    await api('POST','/broadcast-peer',{channel:channel,text:text,peer_id:myPeerId});
+    await api('POST','/broadcast-peer',{username:myUser,channel:channel,text:text,peer_id:myPeerId});
     appendMsg({from:myUser,text:text,ts:nowStr()},true);
     knownCount[channel]=(knownCount[channel]||0)+1;
   }catch(e){ addNotif('Send failed: '+e.message); }
@@ -433,7 +439,7 @@ async function sendMsg(){
 
 async function pollMessages(){
   try{
-    var r=await api('GET','/messages');
+    var r=await api('POST','/messages',{channel:channel});
     if(r.status!=='ok') return;
     var msgs=r.data.messages||[];
     var known=knownCount[channel]||0;
@@ -452,7 +458,7 @@ async function pollMessages(){
         document.title='('+unreadTotal+') '+originalTitle;
         if(window.Notification&&Notification.permission==='granted'){
           var lm=newMsgs[newMsgs.length-1];
-          new Notification(lm.from+' · #'+channel,{body:lm.text,icon:'/static/images/welcome.png'});
+          new Notification(lm.from+' · #'+channel,{body:lm.text});
         }
       }
     }

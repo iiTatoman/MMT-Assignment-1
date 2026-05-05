@@ -1,0 +1,5 @@
+admin:admin
+cat:cat
+dog:dog
+fox:fox
+owl:owl

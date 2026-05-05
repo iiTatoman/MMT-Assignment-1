@@ -81,7 +81,7 @@ class Request():
             if path == '/':
                 path = '/index.html'
         except Exception:
-            return None, None, None
+            return None, None
 
         return method, path, version
              
@@ -112,18 +112,48 @@ class Request():
         self.method, self.path, self.version = self.extract_request_line(request)
         print("[Request] {} path {} version {}".format(self.method, self.path, self.version))
 
-        # Split raw headers and body
-        self._raw_headers, self._raw_body = self.fetch_headers_body(request)
-        self.headers = self.prepare_headers(request)
-        self.body = self._raw_body
-
         #
-        # @bksysnet Preparing the webapp hook with AsynapRous instance
+        # @bksysnet Preapring the webapp hook with AsynapRous instance
         # The default behaviour with HTTP server is empty routed
         #
         # TODO manage the webapp hook in this mounting point
         #
-        if routes and routes != {}:
+        if self.path == "/login" and self.method == "POST":
+            self.hook = True
+        
+        self._raw_headers, self._raw_body = self.fetch_headers_body(request)
+        self.headers = self.prepare_headers(self._raw_headers)
+        self.body = self._raw_body
+        self.url = self.path
+        self.cookies = CaseInsensitiveDict()
+        self.form = {}
+        self.authenticated = False
+        self.login_success = False
+        self.username = ""
+        self._users = {}
+
+        for db_path in ("db/users.txt", "./db/users.txt"):
+            try:
+                with open(db_path, "r") as db_file:
+                    for line in db_file:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if ":" in line:
+                            username, password = line.split(":", 1)
+                        elif "," in line:
+                            username, password = line.split(",", 1)
+                        else:
+                            parts = line.split()
+                            if len(parts) != 2:
+                                continue
+                            username, password = parts
+                        self._users[username.strip()] = password.strip()
+                break
+            except Exception:
+                pass
+            
+        if not routes == {}:
             self.routes = routes
             print("[Request] Routing METHOD {} path {}".format(self.method, self.path))
             self.hook = routes.get((self.method, self.path))
@@ -133,56 +163,73 @@ class Request():
             # ...
             #
 
-        #
-        #  TODO: implement the cookie function here
-        #        by parsing the header
-        #
-        cookie_str = self.headers.get('cookie', '')
-        if cookie_str:
-            cookie_dict = {}
-            for pair in cookie_str.split(';'):
-                pair = pair.strip()
-                if '=' in pair:
-                    k, v = pair.split('=', 1)
-                    cookie_dict[k.strip()] = v.strip()
-            self.cookies = cookie_dict
+        self._raw_heaers = ""
+        self._raw_body =  ""
+        cookies = self.headers.get('cookie', '')
+            #
+            #  TODO: implement the cookie function here
+            #        by parsing the header            #
+        if cookies:
+            for pair in cookies.split(";"):
+                if "=" in pair:
+                    key, value = pair.strip().split("=", 1)
+                    self.cookies[key.strip()] = value.strip()
 
-        # Parse Authorization header for auth (RFC 2617)
-        import base64
-        auth_header = self.headers.get('authorization', '')
-        if auth_header.lower().startswith('basic '):
+        session_id = self.cookies.get("sessionid", "")
+        if session_id.endswith("-session"):
+            username = session_id[:-len("-session")]
+            if username in self._users:
+                self.authenticated = True
+                self.username = username
+
+        auth_header = self.headers.get('authorization', '').strip()
+        if auth_header.startswith('Basic '):
             try:
-                decoded = base64.b64decode(auth_header.split(' ', 1)[1]).decode('utf-8')
+                decoder = __import__('base64')
+                token = auth_header.split(None, 1)[1]
+                decoded = decoder.b64decode(token).decode('utf-8')
                 username, password = decoded.split(':', 1)
-                self.auth = (username, password)
+                if self._users.get(username) == password:
+                    self.authenticated = True
+                    self.username = username
             except Exception:
-                self.auth = None
-        else:
-            self.auth = None
+                pass
 
+        if self.body:
+            for pair in self.body.split("&"):
+                if "=" in pair:
+                    key, value = pair.split("=", 1)
+                    key = key.replace("+", " ")
+                    value = value.replace("+", " ")
+                    value = value.replace("%40", "@")
+                    value = value.replace("%20", " ")
+                    self.form[key] = value
+
+        if self.path == "/login" and self.method == "POST":
+            username = self.form.get("username", "")
+            password = self.form.get("password", "")
+            if self._users.get(username) == password:
+                self.login_success = True
+                self.authenticated = True
+                self.username = username
         return
 
     def prepare_body(self, data, files, json=None):
-        self.body = data
         self.prepare_content_length(self.body)
+        self.body = body
         #
         # TODO prepare the request authentication
         #
-        # self.auth = ...
+	# self.auth = ...
         return
 
 
     def prepare_content_length(self, body):
-        if not self.headers:
-            self.headers = {}
-        if body:
-            self.headers["Content-Length"] = str(len(body))
-        else:
-            self.headers["Content-Length"] = "0"
+        self.headers["Content-Length"] = "0"
         #
         # TODO prepare the request authentication
         #
-        # self.auth = ...
+	# self.auth = ...
         return
 
 
@@ -190,7 +237,7 @@ class Request():
         #
         # TODO prepare the request authentication
         #
-        self.auth = auth
+	# self.auth = ...
         return
 
     def prepare_cookies(self, cookies):

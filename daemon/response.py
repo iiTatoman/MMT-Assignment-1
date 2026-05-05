@@ -23,24 +23,9 @@ The current version supports MIME type detection, content loading and header for
 import datetime
 import os
 import mimetypes
-import base64
-import hashlib
-import time
 from .dictionary import CaseInsensitiveDict
 
-# BASE_DIR points to the project root (one level above daemon/)
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep
-
-# --- Section 2.2: Authentication data stores ---
-# Simple in-memory user database  {username: password}
-USER_DB = {
-    "admin":  "admin123",
-    "user1":  "password",
-    "alice":  "alice123",
-}
-AUTH_REALM = "AsynapRous"
-# Session store: {session_token: username}
-SESSION_STORE = {}
+BASE_DIR = ""
 
 class Response():   
     """The :class:`Response <Response>` object, which contains a
@@ -177,36 +162,26 @@ class Response():
                 base_dir = BASE_DIR+"static/"
             elif sub_type == 'html':
                 base_dir = BASE_DIR+"www/"
-            #
-            #  TODO: process other mime_type
-            #        text/csv
-            #        text/xml
-            #
-            elif sub_type in ('csv', 'xml', 'javascript'):
-                base_dir = BASE_DIR+"static/"
             else:
-                base_dir = BASE_DIR+"static/"
+                handle_text_other(sub_type)
         elif main_type == 'image':
             base_dir = BASE_DIR+"static/"
             self.headers['Content-Type']='image/{}'.format(sub_type)
         elif main_type == 'application':
             base_dir = BASE_DIR+"apps/"
             self.headers['Content-Type']='application/{}'.format(sub_type)
-            #
-            #  TODO: process other mime_type
-            #        application/xml
-            #        application/zip
-            #
-            if sub_type in ('xml', 'zip', 'pdf'):
-                base_dir = BASE_DIR+"static/"
-        elif main_type == 'video':
-            #
-            #  TODO: process other mime_type
-            #        video/mp4
-            #        video/mpeg
-            #
-            base_dir = BASE_DIR+"static/"
-            self.headers['Content-Type']='video/{}'.format(sub_type)
+        #
+        #  TODO: process other mime_type
+        #        application/xml       
+        #        application/zip
+        #        ...
+        #        text/csv
+        #        text/xml
+        #        ...
+        #        video/mp4 
+        #        video/mpeg
+        #        ...
+        #
         else:
             raise ValueError("Invalid MEME type: main_type={} sub_type={}".format(main_type,sub_type))
 
@@ -239,7 +214,7 @@ class Response():
         return len(content), content
 
 
-    def build_response_header(self, request, status_code=200, reason="OK"):
+    def build_response_header(self, request):
         """
         Constructs the HTTP response headers based on the class:`Request <Request>
         and internal attributes.
@@ -248,17 +223,16 @@ class Response():
 
         :rtypes bytes: encoded HTTP response header.
         """
-        reqhdr = request.headers if request and request.headers else {}
+        reqhdr = request.headers
         rsphdr = self.headers
 
         #Build dynamic headers
         headers = {
-                "Access-Control-Allow-Origin": "*", # Allow all origins
-                "Access-Control-Allow-Methods": "GET, POST, OPTIONS, PUT, DELETE",
-                "Access-Control-Allow-Headers": "Content-Type, Authorization, Cookie",
-                "Access-Control-Allow-Credentials": "true",
+                "Accept": "{}".format(reqhdr.get("Accept", "application/json")),
+                "Accept-Language": "{}".format(reqhdr.get("Accept-Language", "en-US,en;q=0.9")),
+                "Authorization": "{}".format(reqhdr.get("Authorization", "Basic <credentials>")),
                 "Cache-Control": "no-cache",
-                "Content-Type": "{}".format(self.headers.get('Content-Type', 'application/octet-stream')),
+                "Content-Type": "{}".format(self.headers['Content-Type']),
                 "Content-Length": "{}".format(len(self._content)),
         #       "Cookie": "{}".format(reqhdr.get("Cookie", "sessionid=xyz789")), #dummy cooki
         #
@@ -266,27 +240,49 @@ class Response():
         #
         #       self.auth = ...
                 "Date": "{}".format(datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")),
-                "Connection": "close",
+                "Max-Forward": "10",
+                "Pragma": "no-cache",
+                "Proxy-Authorization": "Basic dXNlcjpwYXNz",  # example base64
+                "Warning": "199 Miscellaneous warning",
+                "User-Agent": "{}".format(reqhdr.get("User-Agent", "Chrome/123.0.0.0")),
             }
 
-        # Propagate Set-Cookie from response headers (section 2.2 RFC 6265)
-        if 'Set-Cookie' in self.headers:
-            headers['Set-Cookie'] = self.headers['Set-Cookie']
-
         # Header text alignment
-        #
-        #  TODO: implement the header building to create formated
-        #        header from the provided headers
-        #
-        status_line = "HTTP/1.1 {} {}\r\n".format(status_code, reason)
-        fmt_header = status_line + "".join(
-            "{}: {}\r\n".format(k, v) for k, v in headers.items()
-        ) + "\r\n"
+            #
+            #  TODO: implement the header building to create formated
+            #        header from the provied headers
+            #
+            #
+            # TODO prepare the request authentication
+            #
+            # self.auth = ...
+        headers.pop("Accept", None)
+        headers.pop("Accept-Language", None)
+        headers.pop("Authorization", None)
+        headers.pop("Proxy-Authorization", None)
+        headers.pop("Max-Forward", None)
+        headers.pop("User-Agent", None)
 
-        #
-        # TODO prepare the request authentication
-        #
-        # self.auth = ...
+        headers["Connection"] = "close"
+        headers["Server"] = "AsynapRous"
+
+        if getattr(request, "login_success", False):
+            username = getattr(request, "username", "")
+            if username:
+                headers["Set-Cookie"] = (
+                    "sessionid={}-session; Path=/; HttpOnly".format(username)
+                )
+
+        if self.status_code == 401:
+            headers["WWW-Authenticate"] = 'Basic realm="AsynapRous"'
+
+        status_code = self.status_code if self.status_code else 200
+        reason = self.reason if self.reason else "OK"
+
+        fmt_header = "HTTP/1.1 {} {}\r\n".format(status_code, reason)
+        for key, value in headers.items():
+            fmt_header += "{}: {}\r\n".format(key, value)
+        fmt_header += "\r\n"
 
         return str(fmt_header).encode('utf-8')
 
@@ -310,97 +306,15 @@ class Response():
             ).encode('utf-8')
 
 
-    # --- Section 2.2: Authentication helpers (RFC 2617 / RFC 7235 / RFC 6265) ---
-
-    def check_basic_auth(self, request):
-        """Validate HTTP Basic Authentication (RFC 2617 / RFC 7235).
-
-        :param request: Request object with parsed headers.
-        :return: username str if valid, None otherwise.
-        """
-        auth_header = request.headers.get('authorization', '') if request.headers else ''
-        if not auth_header.lower().startswith('basic '):
-            return None
-        try:
-            credentials = auth_header.split(' ', 1)[1]
-            decoded = base64.b64decode(credentials).decode('utf-8')
-            username, password = decoded.split(':', 1)
-            if USER_DB.get(username) == password:
-                return username
-        except Exception:
-            pass
-        return None
-
-    def check_session_cookie(self, request):
-        """Validate a session cookie (RFC 6265).
-
-        :param request: Request object with parsed cookies.
-        :return: username str if valid session found, None otherwise.
-        """
-        cookies = request.cookies if request.cookies else {}
-        session_id = cookies.get('session_id', '')
-        if session_id and session_id in SESSION_STORE:
-            return SESSION_STORE[session_id]
-        return None
-
-    def build_auth_challenge(self):
-        """Build a 401 Unauthorized response with WWW-Authenticate header (RFC 7235)."""
-        body = b"401 Unauthorized"
-        header = (
-            "HTTP/1.1 401 Unauthorized\r\n"
-            "WWW-Authenticate: Basic realm=\"{}\"\r\n"
-            "Content-Type: text/plain\r\n"
-            "Content-Length: {}\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-        ).format(AUTH_REALM, len(body))
-        return header.encode('utf-8') + body
-
-    def build_redirect(self, location, set_cookie=None):
-        """Build a 302 redirect response, optionally with Set-Cookie (RFC 6265)."""
-        body = b"Redirecting..."
-        cookie_line = ""
-        if set_cookie:
-            cookie_line = "Set-Cookie: {}; Path=/; HttpOnly\r\n".format(set_cookie)
-        header = (
-            "HTTP/1.1 302 Found\r\n"
-            "Location: {}\r\n"
-            "{}"
-            "Content-Type: text/plain\r\n"
-            "Content-Length: {}\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-        ).format(location, cookie_line, len(body))
-        return header.encode('utf-8') + body
-
-    def build_ok_json(self, json_bytes):
-        """Build a 200 OK response with a JSON body."""
-        header = (
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: application/json\r\n"
-            "Content-Length: {}\r\n"
-            "Cache-Control: no-cache\r\n"
-            "Connection: close\r\n"
-            "\r\n"
-        ).format(len(json_bytes))
-        return header.encode('utf-8') + json_bytes
-
     def build_response(self, request, envelop_content=None):
         """
         Builds a full HTTP response including headers and content based on the request.
 
         :params request (class:`Request <Request>`): incoming request object.
-        :params envelop_content: optional bytes from a route hook handler.
 
         :rtype bytes: complete HTTP response using prepared headers and content.
         """
         print("[Response] Start build response with req {}".format(request))
-
-        # If a route hook returned content, serve it as JSON (section 2.3 AsynapRous)
-        if envelop_content is not None:
-            if isinstance(envelop_content, str):
-                envelop_content = envelop_content.encode('utf-8')
-            return self.build_ok_json(envelop_content)
 
         path = request.path
 
@@ -417,21 +331,35 @@ class Response():
         elif mime_type == 'application/json' or mime_type == 'application/octet-stream':
             base_dir = self.prepare_content_type(mime_type = 'application/json')
             envelop_content = ""
-        elif mime_type and mime_type.startswith('image/'):
-            base_dir = self.prepare_content_type(mime_type=mime_type)
-        elif mime_type == 'text/javascript':
-            base_dir = self.prepare_content_type(mime_type='text/javascript')
 
         #
         # TODO: add support objects
         #
+        if mime_type.startswith("image/"):
+            base_dir = self.prepare_content_type(mime_type=mime_type)
+        elif mime_type in ("text/javascript", "application/javascript"):
+            self.headers["Content-Type"] = mime_type
+            base_dir = BASE_DIR + "static/"
+        elif mime_type == "text/plain":
+            base_dir = self.prepare_content_type(mime_type="text/plain")
+
+        if base_dir:
+            if envelop_content is None:
+                content_length, content = self.build_content(path, base_dir)
+                if content_length < 0:
+                    return self.build_notfound()
+            else:
+                if isinstance(envelop_content, bytes):
+                    content = envelop_content
+                else:
+                    content = str(envelop_content).encode("utf-8")
+                content_length = len(content)
+
+            self._content = content
+            self.status_code = 200
+            self.reason = "OK"
+            self._header = self.build_response_header(request)
         else:
             return self.build_notfound()
 
-        content_length, content = self.build_content(path, base_dir)
-        if content_length < 0:
-            return self.build_notfound()
-
-        self._content = content
-        self._header = self.build_response_header(request)
         return self._header + self._content

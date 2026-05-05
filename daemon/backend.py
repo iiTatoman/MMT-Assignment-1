@@ -54,7 +54,7 @@ from .dictionary import CaseInsensitiveDict
 import selectors
 sel = selectors.DefaultSelector()
 
-mode_async = "callback"
+#mode_async = "callback"
 #mode_async = "coroutine"
 mode_async = "threading"
 
@@ -91,8 +91,6 @@ def handle_client_callback(server, ip, port,conn, addr, routes):
     # Handle client
     daemon.handle_client(conn, addr, routes)
 
-# Module-level routes store for the coroutine server path
-_coroutine_routes = {}
 
 # Coroutine async/await for handling new client
 async def handle_client_coroutine(reader, writer):
@@ -108,16 +106,10 @@ async def handle_client_coroutine(reader, writer):
 
     # Handle client in asynchronous mode
     while True:
-        if reader.at_eof():
-            break
-        daemon = HttpAdapter(None, None, None, None, _coroutine_routes)
+        daemon = HttpAdapter(None, None, None, None, None)
         await daemon.handle_client_coroutine(reader, writer)
-        break  # HTTP/1.0 style: one request per connection
 
 async def async_server(ip="0.0.0.0", port=7000, routes={}):
-    global _coroutine_routes
-    _coroutine_routes = routes
-
     print("[Backend] async_server **ASYNC** listening on port {}".format(port))
     if routes != {}:
         print("[Backend] route settings")
@@ -194,40 +186,36 @@ def run_backend(ip, port, routes):
             if mode_async == "callback":
                # Callback implementation - Event driven architecture
                server.setblocking(False)
- 
+
                events = sel.select(timeout=None)
                for key, mask in events:
                    callback, ip, port, routes = key.data
                    callback(key.fileobj, ip, port, conn, addr, routes)
- 
+
             elif mode_async == "coroutine":
-               # Coroutine implementation - wrap the accepted raw socket into
-               # asyncio streams and dispatch to handle_client_coroutine.
-               # A new event loop runs in a daemon thread per connection so
-               # the main accept() loop stays non-blocking.
-               async def run_coroutine_client(c, a):
-                   reader, writer = await asyncio.open_connection(sock=c)
-                   daemon = HttpAdapter(ip, port, c, a, routes)
+               conn.setblocking(False)
+
+               async def run_client_coroutine():
+                   reader, writer = await asyncio.open_connection(sock=conn)
+                   daemon = HttpAdapter(ip, port, conn, addr, routes)
                    await daemon.handle_client_coroutine(reader, writer)
- 
-               coroutine_thread = threading.Thread(
-                   target=lambda c=conn, a=addr: asyncio.run(run_coroutine_client(c, a)),
-                   daemon=True
-               )
-               coroutine_thread.start()
- 
+                   writer.close()
+                   await writer.wait_closed()
+
+               asyncio.run(run_client_coroutine())
+
             else:
                # Baseline multi-thread implementation
                client_thread = threading.Thread(
                    target=handle_client,
                    args=(ip, port, conn, addr, routes),
-                   daemon=True
                )
+               client_thread.daemon = True
                client_thread.start()
- 
- 
+
+
     except socket.error as e:
-      print("Socket error: {}".format(e))
+        print("Socket error: {}".format(e))
 
 def create_backend(ip, port, routes={}):
     """

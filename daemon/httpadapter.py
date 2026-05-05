@@ -105,80 +105,87 @@ class HttpAdapter:
         # Response handler
         resp = self.response
 
-        # Handle the request — read until full HTTP message received
-        try:
-            raw = b""
-            conn.settimeout(5.0)
-            while True:
-                chunk = conn.recv(4096)
-                if not chunk:
-                    break
-                raw += chunk
-                if b"\r\n\r\n" in raw:
-                    # Check Content-Length to read body
-                    header_part = raw.split(b"\r\n\r\n", 1)[0].decode('utf-8', errors='replace')
-                    body_part   = raw.split(b"\r\n\r\n", 1)[1]
-                    content_length = 0
-                    for line in header_part.splitlines():
-                        if line.lower().startswith('content-length:'):
-                            try:
-                                content_length = int(line.split(':', 1)[1].strip())
-                            except ValueError:
-                                pass
-                    if len(body_part) >= content_length:
-                        break
-        except Exception as e:
-            print("[HttpAdapter] recv error: {}".format(e))
-            try:
-                conn.close()
-            except Exception:
-                pass
-            return
-
-        msg = raw.decode('utf-8', errors='replace')
+        # Handle the request
+        msg = conn.recv(4096).decode()
         req.prepare(msg, routes)
         print("[HttpAdapter] Invoke handle_client connection {}".format(addr))
 
-        # Section 2.2: check Basic Auth / session cookie for protected paths
-        user = resp.check_session_cookie(req) or resp.check_basic_auth(req)
-        protected = req.path not in ('/', '/index.html', '/login.html',
-                                     '/login', '/form.html', '/chat.html')
-        if req.path and req.path.startswith('/protected') and not user:
-            response = resp.build_auth_challenge()
-            conn.sendall(response)
-            conn.close()
-            return
+        response = resp.build_response(req)
 
         # Handle request hook
         if req.hook:
             #
             # TODO: handle for App hook here
             #
-            # Call the registered route handler (sync or async)
-            try:
-                if inspect.iscoroutinefunction(req.hook):
-                    import asyncio
-                    loop = asyncio.new_event_loop()
-                    result = loop.run_until_complete(req.hook(req.headers, req.body or ""))
-                    loop.close()
+            if req.path == '/login' and req.method == 'POST':
+                if getattr(req, 'login_success', False):
+                    content = b"Login success"
+                    sessionid = "{}-session".format(getattr(req, 'username', ''))
+                    response = (
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Type: text/plain\r\n"
+                        "Set-Cookie: sessionid={}; Path=/; HttpOnly\r\n"
+                        "Content-Length: {}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    ).format(sessionid, len(content)).encode('utf-8') + content
                 else:
-                    result = req.hook(req.headers, req.body or "")
-            except Exception as e:
-                print("[HttpAdapter] Hook error: {}".format(e))
-                result = b'{"error":"internal server error"}'
+                    content = b"Unauthorized"
+                    response = (
+                        "HTTP/1.1 401 Unauthorized\r\n"
+                        "Content-Type: text/plain\r\n"
+                        "WWW-Authenticate: Basic realm=\"AsynapRous\"\r\n"
+                        "Content-Length: {}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    ).format(len(content)).encode('utf-8') + content
+            elif req.path == '/login' or req.path == '/login.html':
+                mime_type = resp.get_mime_type('/login.html')
+                base_dir = resp.prepare_content_type(mime_type)
+                length, content = resp.build_content('/login.html', base_dir)
+                if length < 0:
+                    response = resp.build_notfound()
+                else:
+                    resp._content = content
+                    resp.status_code = 200
+                    resp.reason = "OK"
+                    resp._header = resp.build_response_header(req)
+                    response = resp._header + resp._content
+            elif not getattr(req, 'authenticated', False) and req.path not in ('/chat.html', '/favicon.ico'):
+                content = b"Authentication required"
+                response = (
+                    "HTTP/1.1 401 Unauthorized\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "WWW-Authenticate: Basic realm=\"AsynapRous\"\r\n"
+                    "Content-Length: {}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                ).format(len(content)).encode('utf-8') + content
+            elif callable(req.hook):
+                result = req.hook(headers=req.headers, body=req.body)
+                if inspect.iscoroutine(result):
+                    result = asyncio.run(result)
 
-            if isinstance(result, str):
-                result = result.encode('utf-8')
-            response = resp.build_response(req, envelop_content=result)
-        else:
-            # No hook — serve static file
-            response = resp.build_response(req)
+                content_type = 'application/json'
+                if isinstance(result, tuple) and len(result) == 2:
+                    content_type = result[0]
+                    result = result[1]
+
+                if isinstance(result, bytes):
+                    content = result
+                else:
+                    content = str(result).encode('utf-8')
+
+                response = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: {}\r\n"
+                    "Content-Length: {}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                ).format(content_type, len(content)).encode('utf-8') + content
 
         #print("[HttpAdapter] Response content {}".format(response))
-        try:
-            conn.sendall(response)
-        except Exception as e:
-            print("[HttpAdapter] send error: {}".format(e))
+        conn.sendall(response)
         conn.close()
 
     async def handle_client_coroutine(self, reader, writer):
@@ -202,37 +209,93 @@ class HttpAdapter:
         print("[HttpAdapter] Invoke handle_client_coroutine connection {})".format(addr))
 
         # TODO Handle the request asynchronously
-        msg = await reader.read(65536)
+        msg = await reader.read(1024)
 
-        req.prepare(msg.decode("utf-8", errors='replace'), routes=self.routes or {})
+
+        req.prepare(msg.decode("utf-8"), routes=self.routes or {})
 
         # Handle request hook
         if req.hook:
             #
             # TODO: handle for App hook here
             #
-            # Call the registered route handler (async-aware)
-            try:
-                if inspect.iscoroutinefunction(req.hook):
-                    result = await req.hook(req.headers, req.body or "")
+            if callable(req.hook):
+                result = req.hook(headers=req.headers, body=req.body)
+                if inspect.iscoroutine(result):
+                    result = await result
+                content = str(result).encode('utf-8')
+                response = (
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Content-Length: {}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                ).format(len(content)).encode('utf-8') + content
+            elif req.path == '/login' and req.method == 'POST':
+                if getattr(req, 'login_success', False):
+                    content = b"Login success"
+                    sessionid = "{}-session".format(getattr(req, 'username', ''))
+                    response = (
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Type: text/plain\r\n"
+                        "Set-Cookie: sessionid={}; Path=/\r\n"
+                        "Content-Length: {}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    ).format(sessionid, len(content)).encode('utf-8') + content
                 else:
-                    result = req.hook(req.headers, req.body or "")
-            except Exception as e:
-                print("[HttpAdapter] Async hook error: {}".format(e))
-                result = b'{"error":"internal server error"}'
+                    content = b"Unauthorized"
+                    response = (
+                        "HTTP/1.1 401 Unauthorized\r\n"
+                        "Content-Type: text/plain\r\n"
+                        "WWW-Authenticate: Basic realm=\"AsynapRous\"\r\n"
+                        "Content-Length: {}\r\n"
+                        "Connection: close\r\n"
+                        "\r\n"
+                    ).format(len(content)).encode('utf-8') + content
+            elif req.path == '/login' or req.path == '/login.html':
+                mime_type = resp.get_mime_type('/login.html')
+                base_dir = resp.prepare_content_type(mime_type)
+                length, content = resp.build_content('/login.html', base_dir)
+                if length < 0:
+                    response = resp.build_notfound()
+                else:
+                    resp._content = content
+                    resp.status_code = 200
+                    resp.reason = "OK"
+                    resp._header = resp.build_response_header(req)
+                    response = resp._header + resp._content
+            elif not getattr(req, 'authenticated', False):
+                content = b"Authentication required"
+                response = (
+                    "HTTP/1.1 401 Unauthorized\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "WWW-Authenticate: Basic realm=\"AsynapRous\"\r\n"
+                    "Content-Length: {}\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                ).format(len(content)).encode('utf-8') + content
+            else:
+                mime_type = resp.get_mime_type(req.path)
+                base_dir = resp.prepare_content_type(mime_type)
+                length, content = resp.build_content(req.path, base_dir)
+                if length < 0:
+                    response = resp.build_notfound()
+                else:
+                    resp._content = content
+                    resp.status_code = 200
+                    resp.reason = "OK"
+                    resp._header = resp.build_response_header(req)
+                    response = resp._header + resp._content
+            resp.build_response = lambda prepared_request, envelop_content=None: response
 
-            if isinstance(result, str):
-                result = result.encode('utf-8')
-            response = resp.build_response(req, envelop_content=result)
-        else:
-            # Build response from static file
-            #print("[HttpAdapter] Start **ASYNC** build_response with type {}".format(type(req)))
-            response = resp.build_response(req)
+        # Build response
+        #print("[HttpAdapter] Start **ASYNC** build_response with type {}".format(type(req)))
+        response = resp.build_response(req)
 
         # Send all the response asynchronously
         writer.write(response)
         await writer.drain()
-        writer.close()
 
     @property
     def extract_cookies(self, req, resp):
@@ -360,11 +423,40 @@ class HttpAdapter:
         #       username, password =...
         # we provide dummy auth here
         #
-        import base64
-        username, password = ("user1", "password")
+        username, password = ("", "")
 
-        if username:
-            creds = base64.b64encode("{}:{}".format(username, password).encode()).decode()
-            headers["Proxy-Authorization"] = "Basic {}".format(creds)
+        for db_path in ("db/users.txt", "./db/users.txt"):
+            try:
+                with open(db_path, "r") as db_file:
+                    for line in db_file:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+
+                        if ":" in line:
+                            username, password = line.split(":", 1)
+                        elif "," in line:
+                            username, password = line.split(",", 1)
+                        else:
+                            parts = line.split()
+                            if len(parts) != 2:
+                                continue
+                            username, password = parts
+
+                        username = username.strip()
+                        password = password.strip()
+                        break
+
+                if username and password:
+                    break
+            except Exception:
+                pass
+
+        if username and password:
+            encoder = __import__('base64')
+            token = "{}:{}".format(username, password).encode("utf-8")
+            headers["Proxy-Authorization"] = "Basic {}".format(
+                encoder.b64encode(token).decode("utf-8")
+            )
 
         return headers
