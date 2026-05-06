@@ -85,9 +85,11 @@ async def hello(headers, body):
 # Chat application tracker routes
 
 PEERS = {}
-CHANNELS = {"general": {"members": [], "messages": []},
-            "meme": {"members": [], "messages": []},
-            "homework": {"members": [], "messages": []}}
+CHANNELS = {
+    "general": {"members": [], "messages": []},
+}
+
+DIRECT_MESSAGES = {}
 
 
 def _json(data):
@@ -138,6 +140,13 @@ def _ensure_channel(channel):
     if channel not in CHANNELS:
         CHANNELS[channel] = {"members": [], "messages": []}
     return channel
+
+
+def _dm_key(user_a, user_b):
+    user_a = str(user_a or "").strip()
+    user_b = str(user_b or "").strip()
+    pair = sorted([user_a, user_b])
+    return "{}|{}".format(pair[0], pair[1])
 
 
 def _public_peers():
@@ -261,14 +270,46 @@ def broadcast_peer(headers="guest", body="anonymous"):
 @app.route('/send-peer', methods=['POST'])
 def send_peer(headers="guest", body="anonymous"):
     data = _parse_body(body)
-    target = data.get('target', data.get('to', ''))
-    channel = _ensure_channel(data.get('channel', 'dm-' + target if target else 'general'))
+
     username = data.get('username', 'guest')
+    target = data.get('target', data.get('to', ''))
     text = data.get('text', data.get('message', ''))
-    msg_no = len(CHANNELS[channel]["messages"]) + 1
-    message = {"from": username, "to": target, "text": text, "ts": "msg {}".format(msg_no)}
-    CHANNELS[channel]["messages"].append(message)
-    return _json({"status": "ok", "data": message})
+
+    if not target:
+        return _json({"status": "error", "message": "missing target"})
+
+    key = _dm_key(username, target)
+
+    if key not in DIRECT_MESSAGES:
+        DIRECT_MESSAGES[key] = []
+
+    msg_no = len(DIRECT_MESSAGES[key]) + 1
+    message = {
+        "from": username,
+        "to": target,
+        "text": text,
+        "ts": "msg {}".format(msg_no),
+    }
+
+    DIRECT_MESSAGES[key].append(message)
+
+    return _json({
+        "status": "ok",
+        "data": {
+            "peer": target,
+            "messages": DIRECT_MESSAGES[key],
+            "message": message,
+        }
+    })
+
+
+def _public_channels():
+    data = {}
+    for channel, info in CHANNELS.items():
+        if channel.startswith("dm-"):
+            continue
+        data[channel] = list(info.get("members", []))
+    return data
 
 
 @app.route('/messages', methods=['POST'])
