@@ -105,6 +105,20 @@
     }
     #my-name { font-size: .88rem; color: #e4e6eb; font-weight: 500; }
 
+    #logout-btn {
+      margin-left: auto;
+      padding: 6px 10px;
+      border: none;
+      border-radius: 8px;
+      background: #3a3b3c;
+      color: #e4e6eb;
+      cursor: pointer;
+      font-size: .78rem;
+    }
+    #logout-btn:hover {
+      background: #4a4b4c;
+    }
+
     /* ── Main chat ── */
     #main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: #1c1e21; }
 
@@ -278,6 +292,7 @@
     <div id="sidebar-footer">
       <div id="my-avatar">?</div>
       <span id="my-name">Not connected</span>
+      <button id="logout-btn" onclick="logout()">Logout</button>
     </div>
   </div>
 
@@ -302,8 +317,10 @@
 
 <script>
 var BASE='', token='', myUser='', myPeerId='', channel='general', myPass='';
-var knownCount={}, unreadCount={};
+var activePeer=null;
+var knownCount={}, unreadCount={}, notified={};
 var originalTitle=document.title, unreadTotal=0;
+var pollTimer=null;
 
 var COLORS=['#0084ff','#44bec7','#ffc300','#fa3c4c','#d696bb','#6bcebb','#ff7e29','#e68585'];
 function avatarColor(n){ var h=0; for(var i=0;i<n.length;i++) h=(h*31+n.charCodeAt(i))&0xffffffff; return COLORS[Math.abs(h)%COLORS.length]; }
@@ -312,15 +329,138 @@ function initial(n){ return (n||'?')[0].toUpperCase(); }
 window.onload=function(){
   document.getElementById('url').value=window.location.protocol+'//'+window.location.host;
   if(window.Notification&&Notification.permission==='default') Notification.requestPermission();
+
+  var saved=localStorage.getItem('asynaprous-chat-session');
+  if(saved){
+    try{
+      var s=JSON.parse(saved);
+      BASE=s.BASE||document.getElementById('url').value;
+      myUser=s.myUser||'';
+      myPass=s.myPass||'';
+      myPeerId=s.myPeerId||'';
+      channel=s.channel||'general';
+
+      document.getElementById('url').value=BASE;
+      document.getElementById('user').value=myUser;
+      document.getElementById('pass').value=myPass;
+      document.getElementById('port').value=s.port||4001;
+
+      if(myUser&&myPass&&myPeerId){
+        finishLoginUi();
+        loadChannelMessages(channel);
+        refreshPeers();
+        startPolling();
+      }
+    }catch(e){}
+  }
 };
 
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function nowStr(){ return new Date().toTimeString().slice(0,8); }
 
+function saveSession(port){
+  localStorage.setItem('asynaprous-chat-session',JSON.stringify({
+    BASE:BASE,
+    myUser:myUser,
+    myPass:myPass,
+    myPeerId:myPeerId,
+    channel:channel,
+    port:port
+  }));
+}
+
+function logout(){
+  localStorage.removeItem('asynaprous-chat-session');
+  token='';
+  myUser='';
+  myPass='';
+  myPeerId='';
+  activePeer=null;
+  channel='general';
+  knownCount={};
+  unreadCount={};
+  notified={};
+  location.reload();
+}
+
+function finishLoginUi(){
+  token='ok';
+
+  var col=avatarColor(myUser);
+  document.getElementById('my-avatar').textContent=initial(myUser);
+  document.getElementById('my-avatar').style.background=col;
+  document.getElementById('my-name').textContent=myUser;
+  document.getElementById('overlay').style.display='none';
+
+  document.getElementById('ch-title').textContent=channel;
+  document.getElementById('header-avatar').textContent='#';
+
+  window.addEventListener('focus',function(){
+    unreadTotal=0;
+    document.title=originalTitle;
+    clearUnreadBadge(channel);
+  });
+}
+
+async function pollMessages(){
+  try{
+    var r=await api('POST','/messages',{channel:channel});
+    if(r.status!=='ok') return;
+
+    var msgs=r.data.messages||[];
+    var known=knownCount[channel]||0;
+    
+    if(msgs.length!==known){
+      await loadMessages(channel);
+    }
+  }catch(e){}
+}
+
+function startPolling(){
+  if(pollTimer) return;
+
+  pollTimer=setInterval(async function(){
+    await refreshPeers();
+    await pollMessages();
+  },1000);
+}
+
+function stopPolling(){
+  if(pollTimer){
+    clearInterval(pollTimer);
+    pollTimer=null;
+  }
+}
+
+function dmChannelFor(a,b){
+  var pair=[String(a||''),String(b||'')].sort();
+  return 'dm-'+pair[0]+'-'+pair[1];
+}
+
+function currentChatKey(){
+  if(activePeer) return dmChannelFor(myUser,activePeer.username);
+  return channel;
+}
+
+function messageKey(ch,m,i){
+  return ch+'|'+(m.ts||i)+'|'+(m.from||'')+'|'+(m.to||'')+'|'+(m.text||'');
+}
+
 async function api(method,path,body){
   var hdrs={'Content-Type':'application/json'};
   if(myUser&&myPass) hdrs['Authorization']='Basic '+btoa(myUser+':'+myPass);
-  var r=await fetch(BASE+path,{method:method,headers:hdrs,body:body?JSON.stringify(body):undefined});
+
+  var opts={
+    method:method,
+    headers:hdrs,
+    cache:'no-store'
+  };
+
+  if(body!==undefined && body!==null){
+    opts.body=JSON.stringify(body);
+  }
+
+  var r=await fetch(BASE+path,opts);
   return r.json();
 }
 
@@ -330,6 +470,7 @@ async function doLogin(){
   var user=document.getElementById('user').value.trim();
   var pass=document.getElementById('pass').value;
   var port=parseInt(document.getElementById('port').value);
+
   try{
     var body='username='+encodeURIComponent(user)+'&password='+encodeURIComponent(pass);
     var loginResp=await fetch(BASE+'/login',{
@@ -339,33 +480,47 @@ async function doLogin(){
     });
     if(!loginResp.ok) throw new Error('Login failed');
 
-    token='ok'; myUser=user; myPass=pass;
-    var reg=await api('POST','/submit-info',{username:myUser,ip:'127.0.0.1',port:port});
-    myPeerId=(reg.data&&reg.data.peer_id)?reg.data.peer_id:'127.0.0.1:'+port;
+    myUser=user;
+    myPass=pass;
+
+    var explicitPeerId=myUser+':'+port;
+
+    var reg=await api('POST','/submit-info',{
+      username:myUser,
+      ip:'web',
+      port:port,
+      peer_id:explicitPeerId
+    });
+
+    myPeerId=(reg.data&&reg.data.peer_id)?reg.data.peer_id:explicitPeerId;
+
     await api('POST','/add-list',{channel:channel,peer_id:myPeerId});
 
-    var col=avatarColor(myUser);
-    document.getElementById('my-avatar').textContent=initial(myUser);
-    document.getElementById('my-avatar').style.background=col;
-    document.getElementById('my-name').textContent=myUser;
-    document.getElementById('overlay').style.display='none';
+    saveSession(port);
+    finishLoginUi();
     addNotif('Connected as '+myUser);
 
-    window.addEventListener('focus',function(){ unreadTotal=0; document.title=originalTitle; clearUnreadBadge(channel); });
-    setInterval(function(){ pollMessages(); refreshPeers(); },2000);
-    pollMessages(); refreshPeers();
-  }catch(e){ document.getElementById('err').textContent=e.message; }
+    await loadChannelMessages(channel);
+    await refreshPeers();
+    startPolling();
+  }catch(e){
+    document.getElementById('err').textContent=e.message;
+  }
 }
 
 /* ── Peer list (People section) ── */
 function refreshPeerList(peers){
   var ul=document.getElementById('peer-list');
   ul.innerHTML='';
+
   Object.keys(peers).forEach(function(pid){
     var name=peers[pid].username;
     var col=avatarColor(name);
-    var isMe=(pid===myPeerId);
+    var isMe=(pid===myPeerId||name===myUser);
+
     var li=document.createElement('li');
+    li.dataset.peerId=pid;
+
     li.innerHTML=
       '<div class="peer-avatar-wrap">'+
         '<div class="peer-avatar" style="background:'+col+'">'+initial(name)+'</div>'+
@@ -375,8 +530,43 @@ function refreshPeerList(peers){
         '<div class="peer-name">'+esc(name)+(isMe?' (you)':'')+'</div>'+
         '<div class="peer-sub">Active now</div>'+
       '</div>';
+
+    if(!isMe){
+      li.onclick=function(){
+        openPeerChat(pid,peers[pid]);
+      };
+    }
+
     ul.appendChild(li);
   });
+}
+
+async function openPeerChat(pid,peer){
+  activePeer={
+    peer_id:pid,
+    username:peer.username,
+    ip:peer.ip,
+    port:peer.port
+  };
+
+  channel=dmChannelFor(myUser,activePeer.username);
+
+  document.getElementById('ch-title').textContent=activePeer.username;
+  document.getElementById('header-avatar').textContent=initial(activePeer.username);
+  document.getElementById('header-avatar').style.background=avatarColor(activePeer.username);
+  document.getElementById('status').textContent='Direct peer chat';
+
+  document.querySelectorAll('#ch-list li').forEach(function(li){
+    li.classList.remove('active');
+  });
+
+  await api('POST','/connect-peer',{
+    peer_id:pid,
+    target:pid,
+    username:myUser
+  }).catch(function(){});
+
+  await loadChannelMessages(channel);
 }
 
 /* ── Channel list ── */
@@ -415,14 +605,58 @@ function setUnreadBadge(ch,count){
   else b.style.display='none';
 }
 function clearUnreadBadge(ch){ unreadCount[ch]=0; setUnreadBadge(ch,0); }
-
-function switchCh(ch){
+async function switchCh(ch){
   channel=ch;
   document.getElementById('ch-title').textContent=ch;
   document.getElementById('messages').innerHTML='';
-  knownCount[ch]=0; clearUnreadBadge(ch);
-  document.querySelectorAll('#ch-list li').forEach(function(li){ li.classList.toggle('active',li.dataset.ch===ch); });
-  if(token) api('POST','/add-list',{channel:ch,peer_id:myPeerId}).catch(function(){});
+  clearUnreadBadge(ch);
+
+  document.querySelectorAll('#ch-list li').forEach(function(li){
+    li.classList.toggle('active',li.dataset.ch===ch);
+  });
+
+  if(token){
+    await api('POST','/add-list',{channel:ch,peer_id:myPeerId}).catch(function(){});
+    await loadMessages(ch);
+    await refreshPeers();
+  }
+}
+
+async function loadChannelMessages(ch){
+  try{
+    var r=await api('POST','/messages',{channel:ch});
+    if(r.status!=='ok') return;
+
+    var msgs=r.data.messages||[];
+    var box=document.getElementById('messages');
+    box.innerHTML='';
+
+    msgs.forEach(function(m,i){
+      appendMsg(m,m.from===myUser);
+      notified[messageKey(ch,m,i)]=true;
+    });
+
+    knownCount[ch]=msgs.length;
+    box.scrollTop=box.scrollHeight;
+  }catch(e){}
+}
+
+async function loadMessages(ch){
+  try{
+    var r=await api('POST','/messages',{channel:ch});
+    if(r.status!=='ok') return;
+
+    var msgs=r.data.messages||[];
+    var box=document.getElementById('messages');
+    box.innerHTML='';
+
+    msgs.forEach(function(m){
+      appendMsg(m,m.from===myUser);
+    });
+
+    knownCount[ch]=msgs.length;
+    box.scrollTop=box.scrollHeight;
+  }catch(e){}
 }
 
 async function sendMsg(){
@@ -430,40 +664,63 @@ async function sendMsg(){
   var text=inp.value.trim();
   if(!text||!myUser) return;
   inp.value='';
+
   try{
-    await api('POST','/broadcast-peer',{username:myUser,channel:channel,text:text,peer_id:myPeerId});
-    appendMsg({from:myUser,text:text,ts:nowStr()},true);
-    knownCount[channel]=(knownCount[channel]||0)+1;
-  }catch(e){ addNotif('Send failed: '+e.message); }
+    await api('POST','/broadcast-peer',{
+      username:myUser,
+      channel:channel,
+      text:text,
+      peer_id:myPeerId
+    });
+
+    await loadMessages(channel);
+    await refreshPeers();
+  }catch(e){
+    addNotif('Send failed: '+e.message);
+  }
 }
 
-async function pollMessages(){
-  try{
-    var r=await api('POST','/messages',{channel:channel});
-    if(r.status!=='ok') return;
-    var msgs=r.data.messages||[];
-    var known=knownCount[channel]||0;
-    var newMsgs=[];
-    for(var i=known;i<msgs.length;i++){
-      if(msgs[i].from!==myUser){ appendMsg(msgs[i],false); newMsgs.push(msgs[i]); }
-    }
-    knownCount[channel]=msgs.length;
+window.onload=async function(){
+  document.getElementById('url').value=window.location.protocol+'//'+window.location.host;
+  if(window.Notification&&Notification.permission==='default') Notification.requestPermission();
 
-    if(newMsgs.length>0){
-      newMsgs.forEach(function(m){ showToast(m.from,m.text,channel); });
-      if(document.hidden||document.visibilityState==='hidden'){
-        unreadCount[channel]=(unreadCount[channel]||0)+newMsgs.length;
-        unreadTotal+=newMsgs.length;
-        setUnreadBadge(channel,unreadCount[channel]);
-        document.title='('+unreadTotal+') '+originalTitle;
-        if(window.Notification&&Notification.permission==='granted'){
-          var lm=newMsgs[newMsgs.length-1];
-          new Notification(lm.from+' · #'+channel,{body:lm.text});
-        }
+  var saved=localStorage.getItem('asynaprous-chat-session');
+  if(saved){
+    try{
+      var s=JSON.parse(saved);
+      BASE=s.BASE||document.getElementById('url').value;
+      myUser=s.myUser||'';
+      myPass=s.myPass||'';
+      myPeerId=s.myPeerId||'';
+      channel=s.channel||'general';
+
+      document.getElementById('url').value=BASE;
+      document.getElementById('user').value=myUser;
+      document.getElementById('pass').value=myPass;
+      document.getElementById('port').value=s.port||4001;
+
+      if(myUser&&myPass&&myPeerId){
+        finishLoginUi();
+
+        await api('POST','/submit-info',{
+          username:myUser,
+          ip:'web',
+          port:s.port||4001,
+          peer_id:myPeerId
+        });
+
+        await api('POST','/add-list',{
+          channel:channel,
+          peer_id:myPeerId
+        });
+
+        await refreshPeers();
+        await loadChannelMessages(channel);
+        startPolling();
       }
-    }
-  }catch(e){}
-}
+    }catch(e){}
+  }
+};
 
 async function refreshPeers(){
   try{
