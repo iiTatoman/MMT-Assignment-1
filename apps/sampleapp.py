@@ -85,7 +85,9 @@ async def hello(headers, body):
 # Chat application tracker routes
 
 PEERS = {}
-CHANNELS = {"general": {"members": [], "messages": []}}
+CHANNELS = {"general": {"members": [], "messages": []},
+            "meme": {"members": [], "messages": []},
+            "homework": {"members": [], "messages": []}}
 
 
 def _json(data):
@@ -187,10 +189,11 @@ def submit_info(headers="guest", body="anonymous"):
         "channels": PEERS.get(peer_id, {}).get("channels", []),
     }
 
-    if 'general' not in PEERS[peer_id]["channels"]:
-        PEERS[peer_id]["channels"].append('general')
-    if peer_id not in CHANNELS['general']["members"]:
-        CHANNELS['general']["members"].append(peer_id)
+    for channel in CHANNELS:
+        if channel not in PEERS[peer_id]["channels"]:
+            PEERS[peer_id]["channels"].append(channel)
+        if peer_id not in CHANNELS[channel]["members"]:
+            CHANNELS[channel]["members"].append(peer_id)
 
     return _json({"status": "ok", "data": {"peer_id": peer_id}})
 
@@ -271,7 +274,11 @@ def send_peer(headers="guest", body="anonymous"):
 @app.route('/messages', methods=['POST'])
 def messages(headers="guest", body="anonymous"):
     data = _parse_body(body)
-    channel = _ensure_channel(data.get('channel', 'general'))
+    channel = str(data.get('channel', 'general')).strip()
+
+    if channel not in CHANNELS:
+        channel = 'general'
+
     return _json({
         "status": "ok",
         "data": {
